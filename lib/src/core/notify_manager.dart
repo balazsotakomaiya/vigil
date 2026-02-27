@@ -1,5 +1,3 @@
-import 'dart:ui' show VoidCallback;
-
 /// Singleton that batches all notifications.
 ///
 /// During a [batch] call, notifications are queued. When the outermost batch
@@ -12,7 +10,7 @@ class NotifyManager {
   static final instance = NotifyManager();
 
   int _transactions = 0;
-  final _queue = <VoidCallback>[];
+  final _queue = <void Function()>[];
 
   /// Execute [callback] inside a batch transaction.
   ///
@@ -32,7 +30,7 @@ class NotifyManager {
 
   /// Schedule a notification. If inside a [batch], it is queued.
   /// Otherwise it is dispatched immediately via [scheduleFn].
-  void notify(VoidCallback callback) {
+  void notify(void Function() callback) {
     if (_transactions > 0) {
       _queue.add(callback);
     } else {
@@ -41,7 +39,7 @@ class NotifyManager {
   }
 
   void _flush() {
-    final queued = List<VoidCallback>.of(_queue);
+    final queued = List<void Function()>.of(_queue);
     _queue.clear();
     if (queued.isEmpty) return;
     scheduleFn(() {
@@ -55,9 +53,9 @@ class NotifyManager {
   ///
   /// Default: execute synchronously. Flutter adapters can replace this with
   /// `WidgetsBinding.instance.addPostFrameCallback`.
-  void Function(VoidCallback) scheduleFn = _defaultSchedule;
+  void Function(void Function()) scheduleFn = _defaultSchedule;
 
-  static void _defaultSchedule(VoidCallback cb) {
+  static void _defaultSchedule(void Function() cb) {
     cb();
   }
 }

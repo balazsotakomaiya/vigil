@@ -29,6 +29,7 @@ export 'src/core/online_manager.dart';
 export 'src/core/network_mode.dart';
 export 'src/core/retryer.dart';
 export 'src/core/query_defaults.dart';
+export 'src/core/mutation_cache.dart';
 
 // State types
 export 'src/query_state.dart';
@@ -38,9 +39,13 @@ export 'src/mutation_state.dart';
 export 'src/query_client.dart';
 export 'src/query_cache_entry.dart';
 
+// Data types
+export 'src/infinite_query_data.dart';
+
 // Handles
 export 'src/query_handle.dart';
 export 'src/mutation_handle.dart';
+export 'src/infinite_query_handle.dart';
 
 // Mixin & provider
 export 'src/query_mixin.dart';

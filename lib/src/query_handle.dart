@@ -1,5 +1,7 @@
-import 'dart:ui' show VoidCallback;
+import 'dart:async';
 
+import 'core/focus_manager.dart';
+import 'core/online_manager.dart';
 import 'core/retryer.dart';
 import 'query_cache_entry.dart';
 import 'query_client.dart';
@@ -12,13 +14,15 @@ class QueryHandle<T> {
     required List<dynamic> key,
     required Future<T> Function() queryFn,
     required QueryClient client,
-    required VoidCallback onStateChanged,
+    required void Function() onStateChanged,
     required Duration staleTime,
     Duration gcTime = const Duration(minutes: 5),
     bool refetchOnMount = true,
     bool enabled = true,
     T? placeholderData,
     RetryConfig retryConfig = const RetryConfig(),
+    Duration? refetchInterval,
+    bool refetchIntervalInBackground = false,
   })  : _key = key,
         _queryFn = queryFn,
         _client = client,
@@ -27,25 +31,35 @@ class QueryHandle<T> {
         _refetchOnMount = refetchOnMount,
         _enabled = enabled,
         _placeholderData = placeholderData,
-        _retryConfig = retryConfig {
+        _retryConfig = retryConfig,
+        _refetchInterval = refetchInterval,
+        _refetchIntervalInBackground = refetchIntervalInBackground {
     _entry = client.getOrCreateEntry(key, gcTime: gcTime);
     _entry.addListener(_onCacheEntryChanged);
     _computeInitialState();
     _maybeAutoFetch();
+    _startRefetchInterval();
   }
 
   final List<dynamic> _key;
   final Future<T> Function() _queryFn;
   final QueryClient _client;
-  final VoidCallback _onStateChanged;
+  final void Function() _onStateChanged;
   final Duration _staleTime;
   final bool _refetchOnMount;
   final bool _enabled;
   final T? _placeholderData;
   final RetryConfig _retryConfig;
+  final Duration? _refetchInterval;
+  final bool _refetchIntervalInBackground;
 
   late final QueryCacheEntry _entry;
   bool _disposed = false;
+
+  // Refetch interval state
+  Timer? _refetchTimer;
+  void Function()? _focusUnsub;
+  void Function()? _onlineUnsub;
 
   // ---------------------------------------------------------------------------
   // State
@@ -79,6 +93,7 @@ class QueryHandle<T> {
   void refetch() {
     if (_disposed) return;
     _triggerFetch();
+    _resetRefetchInterval();
   }
 
   /// Refetch only if the cached data is stale. Called by [QueryMixin] when the
@@ -89,8 +104,12 @@ class QueryHandle<T> {
   }
 
   /// Optimistically update the cached data.
+  ///
+  /// Does nothing if the cache has no data yet. Use [QueryClient.setQueryData]
+  /// directly if you need to populate empty cache entries.
   void setData(T Function(T prev) updater) {
     if (_disposed) return;
+    if (!_entry.hasData) return;
     final current = _entry.data as T;
     final updated = updater(current);
     _client.setQueryData(_key, updated);
@@ -100,6 +119,7 @@ class QueryHandle<T> {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    _stopRefetchInterval();
     _entry.removeListener(_onCacheEntryChanged);
   }
 
@@ -126,14 +146,14 @@ class QueryHandle<T> {
     } else if (_entry.hasError) {
       _state = QueryState<T>(
         status: QueryStatus.error,
-        fetchStatus: FetchStatus.idle,
+        fetchStatus: _enabled ? FetchStatus.fetching : FetchStatus.idle,
         error: _entry.error,
         stackTrace: _entry.stackTrace,
       );
     } else if (_placeholderData != null) {
       _state = QueryState<T>(
         status: QueryStatus.success,
-        fetchStatus: FetchStatus.fetching,
+        fetchStatus: _enabled ? FetchStatus.fetching : FetchStatus.idle,
         data: _placeholderData,
       );
     } else if (_enabled) {
@@ -236,5 +256,81 @@ class QueryHandle<T> {
     if (_state == newState) return;
     _state = newState;
     _onStateChanged();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Internal: refetch interval (polling)
+  // ---------------------------------------------------------------------------
+
+  void _startRefetchInterval() {
+    if (_refetchInterval == null || !_enabled) return;
+
+    // Subscribe to focus/online changes to pause/resume the timer.
+    if (!_refetchIntervalInBackground) {
+      _focusUnsub = FocusManager.instance.subscribe(_onIntervalFocusChanged);
+    }
+    _onlineUnsub = OnlineManager.instance.subscribe(_onIntervalOnlineChanged);
+
+    _scheduleNextInterval();
+  }
+
+  void _stopRefetchInterval() {
+    _refetchTimer?.cancel();
+    _refetchTimer = null;
+    _focusUnsub?.call();
+    _focusUnsub = null;
+    _onlineUnsub?.call();
+    _onlineUnsub = null;
+  }
+
+  void _resetRefetchInterval() {
+    if (_refetchInterval == null) return;
+    _refetchTimer?.cancel();
+    _refetchTimer = null;
+    _scheduleNextInterval();
+  }
+
+  void _scheduleNextInterval() {
+    if (_disposed || _refetchInterval == null) return;
+    if (!_shouldIntervalRun()) return;
+
+    _refetchTimer?.cancel();
+    _refetchTimer = Timer(_refetchInterval!, () {
+      if (_disposed) return;
+      if (!_shouldIntervalRun()) return;
+      _triggerFetch();
+      _scheduleNextInterval();
+    });
+  }
+
+  bool _shouldIntervalRun() {
+    if (!_enabled) return false;
+    if (!_refetchIntervalInBackground && !FocusManager.instance.isFocused) {
+      return false;
+    }
+    if (!OnlineManager.instance.isOnline) return false;
+    return true;
+  }
+
+  void _onIntervalFocusChanged() {
+    if (_disposed || _refetchInterval == null) return;
+    if (FocusManager.instance.isFocused) {
+      // Resuming — restart the interval.
+      _scheduleNextInterval();
+    } else {
+      // Backgrounded — pause the timer.
+      _refetchTimer?.cancel();
+      _refetchTimer = null;
+    }
+  }
+
+  void _onIntervalOnlineChanged() {
+    if (_disposed || _refetchInterval == null) return;
+    if (OnlineManager.instance.isOnline) {
+      _scheduleNextInterval();
+    } else {
+      _refetchTimer?.cancel();
+      _refetchTimer = null;
+    }
   }
 }

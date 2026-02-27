@@ -1,5 +1,3 @@
-import 'dart:ui' show VoidCallback;
-
 import 'package:flutter/widgets.dart';
 
 import 'subscribable.dart';
@@ -11,14 +9,14 @@ import 'subscribable.dart';
 ///
 /// Override platform behavior with [setEventListener] for tests or
 /// non-standard platforms (e.g. desktop, React Native-style).
-class FocusManager extends Subscribable<VoidCallback> {
+class FocusManager extends Subscribable<void Function()> {
   FocusManager();
 
   static final instance = FocusManager();
 
   bool _focused = true;
   _FocusObserver? _observer;
-  VoidCallback? _teardown;
+  void Function()? _teardown;
 
   /// Whether the app is currently focused/visible.
   bool get isFocused => _focused;
@@ -37,7 +35,7 @@ class FocusManager extends Subscribable<VoidCallback> {
   /// [setup] receives a callback that should be called with the new focus
   /// state whenever it changes. It should return a teardown function.
   void setEventListener(
-    VoidCallback Function(void Function(bool focused) onFocusChanged) setup,
+    void Function() Function(void Function(bool focused) onFocusChanged) setup,
   ) {
     _removePlatformListener();
     _teardown = setup((focused) => setFocused(focused));

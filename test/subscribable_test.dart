@@ -1,9 +1,7 @@
-import 'dart:ui' show VoidCallback;
-
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vigil/vigil.dart';
 
-class _TestSubscribable extends Subscribable<VoidCallback> {
+class _TestSubscribable extends Subscribable<void Function()> {
   int subscribeCount = 0;
   int unsubscribeCount = 0;
 

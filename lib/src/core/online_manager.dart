@@ -1,5 +1,3 @@
-import 'dart:ui' show VoidCallback;
-
 import 'subscribable.dart';
 
 /// Tracks network connectivity state.
@@ -17,14 +15,14 @@ import 'subscribable.dart';
 /// ```
 ///
 /// Lazy: only calls [setEventListener]'s setup when first subscriber arrives.
-class OnlineManager extends Subscribable<VoidCallback> {
+class OnlineManager extends Subscribable<void Function()> {
   OnlineManager();
 
   static final instance = OnlineManager();
 
   bool _online = true;
-  VoidCallback? _teardown;
-  VoidCallback Function(void Function(bool online) onOnlineChanged)? _setup;
+  void Function()? _teardown;
+  void Function() Function(void Function(bool online) onOnlineChanged)? _setup;
 
   /// Whether the device is currently online.
   bool get isOnline => _online;
@@ -43,7 +41,7 @@ class OnlineManager extends Subscribable<VoidCallback> {
   /// [setup] receives a callback that should be called with the new online
   /// state whenever it changes. It should return a teardown function.
   void setEventListener(
-    VoidCallback Function(void Function(bool online) onOnlineChanged) setup,
+    void Function() Function(void Function(bool online) onOnlineChanged) setup,
   ) {
     _removePlatformListener();
     _setup = setup;

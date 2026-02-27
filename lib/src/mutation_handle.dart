@@ -1,36 +1,45 @@
-import 'dart:ui' show VoidCallback;
+import 'dart:async';
 
+import 'core/mutation_cache.dart';
 import 'mutation_state.dart';
 import 'query_client.dart';
 
 /// Handle returned by [QueryMixin.mutation] that manages the lifecycle of an
 /// async mutation including optimistic updates and rollback.
+///
+/// If a [scope] is provided, mutations with the same scope run serially
+/// (FIFO). This prevents race conditions on the same resource — e.g. two
+/// rapid taps submitting a form.
 class MutationHandle<TData, TInput> {
   MutationHandle({
     required Future<TData> Function(TInput input) mutationFn,
     required QueryClient client,
-    required VoidCallback onStateChanged,
+    required void Function() onStateChanged,
     List<List<dynamic>>? invalidates,
     void Function(TData data)? onSuccess,
     void Function(Object error, void Function() rollback)? onError,
     void Function(TInput input)? optimisticUpdate,
+    String? scope,
   })  : _mutationFn = mutationFn,
         _client = client,
         _onStateChanged = onStateChanged,
         _invalidates = invalidates,
         _onSuccess = onSuccess,
         _onError = onError,
-        _optimisticUpdate = optimisticUpdate;
+        _optimisticUpdate = optimisticUpdate,
+        _scope = scope;
 
   final Future<TData> Function(TInput input) _mutationFn;
   final QueryClient _client;
-  final VoidCallback _onStateChanged;
+  final void Function() _onStateChanged;
   final List<List<dynamic>>? _invalidates;
   final void Function(TData data)? _onSuccess;
   final void Function(Object error, void Function() rollback)? _onError;
   final void Function(TInput input)? _optimisticUpdate;
+  final String? _scope;
 
   bool _disposed = false;
+  MutationCacheEntry? _cacheEntry;
 
   // ---------------------------------------------------------------------------
   // State
@@ -64,10 +73,31 @@ class MutationHandle<TData, TInput> {
   // ---------------------------------------------------------------------------
 
   /// Execute the mutation with [input].
+  ///
+  /// If this mutation has a [scope] and another mutation with the same scope
+  /// is already running, this call waits for its turn before executing.
   Future<void> mutate(TInput input) async {
     if (_disposed) return;
 
     _updateState(const MutationLoading());
+
+    // Register in the mutation cache for scope serialization.
+    _cacheEntry?.dispose();
+    _cacheEntry = MutationCache.instance.add(scope: _scope);
+
+    // Wait for scope if needed.
+    if (!MutationCache.instance.canRun(_cacheEntry!)) {
+      final completer = Completer<void>();
+      _cacheEntry!.markWaiting(() => completer.complete());
+      await completer.future;
+      if (_disposed) {
+        _cacheEntry?.dispose();
+        _cacheEntry = null;
+        return;
+      }
+    }
+
+    _cacheEntry!.markExecuting();
 
     // --- Optimistic update with snapshot for rollback ---
     Map<String, dynamic>? snapshot;
@@ -78,7 +108,11 @@ class MutationHandle<TData, TInput> {
 
     try {
       final data = await _mutationFn(input);
-      if (_disposed) return;
+      if (_disposed) {
+        _cacheEntry?.markDone();
+        _cacheEntry = null;
+        return;
+      }
 
       _updateState(MutationSuccess<TData>(data));
 
@@ -91,7 +125,11 @@ class MutationHandle<TData, TInput> {
 
       _onSuccess?.call(data);
     } catch (e) {
-      if (_disposed) return;
+      if (_disposed) {
+        _cacheEntry?.markDone();
+        _cacheEntry = null;
+        return;
+      }
 
       _updateState(MutationError<TData>(e));
 
@@ -102,6 +140,9 @@ class MutationHandle<TData, TInput> {
       }
 
       _onError?.call(e, rollback);
+    } finally {
+      _cacheEntry?.markDone();
+      _cacheEntry = null;
     }
   }
 
@@ -114,6 +155,8 @@ class MutationHandle<TData, TInput> {
   /// Clean up. Called by [QueryMixin.dispose].
   void dispose() {
     _disposed = true;
+    _cacheEntry?.dispose();
+    _cacheEntry = null;
   }
 
   // ---------------------------------------------------------------------------

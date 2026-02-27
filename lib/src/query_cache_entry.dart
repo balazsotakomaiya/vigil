@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:ui' show VoidCallback;
 
 import 'core/notify_manager.dart';
 import 'core/retryer.dart';
@@ -40,13 +39,13 @@ class QueryCacheEntry {
   // Listeners
   // ---------------------------------------------------------------------------
 
-  final Set<VoidCallback> _listeners = {};
+  final Set<void Function()> _listeners = {};
 
   /// Number of active listeners (query handles observing this entry).
   int get listenerCount => _listeners.length;
 
   /// Register a listener that is called whenever the entry's state changes.
-  void addListener(VoidCallback listener) {
+  void addListener(void Function() listener) {
     _listeners.add(listener);
     _cancelGcTimer();
   }
@@ -54,7 +53,7 @@ class QueryCacheEntry {
   /// Remove a previously registered listener.
   ///
   /// When the listener count drops to zero the GC timer starts.
-  void removeListener(VoidCallback listener) {
+  void removeListener(void Function() listener) {
     _listeners.remove(listener);
     if (_listeners.isEmpty) {
       _startGcTimer();
@@ -65,7 +64,7 @@ class QueryCacheEntry {
   void notifyListeners() {
     NotifyManager.instance.notify(() {
       // Copy to avoid concurrent modification if a listener triggers disposal.
-      for (final listener in List<VoidCallback>.of(_listeners)) {
+      for (final listener in List<void Function()>.of(_listeners)) {
         listener();
       }
     });

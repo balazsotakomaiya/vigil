@@ -1,10 +1,9 @@
-import 'dart:ui' show VoidCallback;
-
 import 'package:flutter/widgets.dart';
 
 import 'core/focus_manager.dart';
 import 'core/network_mode.dart';
 import 'core/retryer.dart';
+import 'infinite_query_handle.dart';
 import 'mutation_handle.dart';
 import 'query_client.dart';
 import 'query_client_provider.dart';
@@ -38,7 +37,8 @@ import 'query_handle.dart';
 mixin QueryMixin<W extends StatefulWidget> on State<W> {
   final List<QueryHandle<dynamic>> _queries = [];
   final List<MutationHandle<dynamic, dynamic>> _mutations = [];
-  VoidCallback? _focusUnsub;
+  final List<InfiniteQueryHandle<dynamic, dynamic>> _infiniteQueries = [];
+  void Function()? _focusUnsub;
 
   /// Resolve the [QueryClient] — prefer inherited, fall back to singleton.
   QueryClient get _queryClient {
@@ -66,6 +66,9 @@ mixin QueryMixin<W extends StatefulWidget> on State<W> {
     }
     for (final m in _mutations) {
       m.dispose();
+    }
+    for (final iq in _infiniteQueries) {
+      iq.dispose();
     }
     super.dispose();
   }
@@ -102,6 +105,10 @@ mixin QueryMixin<W extends StatefulWidget> on State<W> {
   ///   (default: always retry).
   /// - [networkMode] controls fetch behavior relative to connectivity
   ///   (default: [NetworkMode.online]).
+  /// - [refetchInterval] enables polling: the query automatically refetches
+  ///   at this interval. Pass `null` (the default) to disable.
+  /// - [refetchIntervalInBackground] if `true`, keeps polling even when the
+  ///   app is backgrounded (default: `false`).
   QueryHandle<T> query<T>(
     List<dynamic> key,
     Future<T> Function() queryFn, {
@@ -114,6 +121,8 @@ mixin QueryMixin<W extends StatefulWidget> on State<W> {
     Duration Function(int attempt)? retryDelay,
     bool Function(Object error)? shouldRetry,
     NetworkMode networkMode = NetworkMode.online,
+    Duration? refetchInterval,
+    bool refetchIntervalInBackground = false,
   }) {
     final handle = QueryHandle<T>(
       key: key,
@@ -133,8 +142,67 @@ mixin QueryMixin<W extends StatefulWidget> on State<W> {
         shouldRetry: shouldRetry ?? defaultShouldRetry,
         networkMode: networkMode,
       ),
+      refetchInterval: refetchInterval,
+      refetchIntervalInBackground: refetchIntervalInBackground,
     );
     _queries.add(handle);
+    return handle;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Infinite Query factory
+  // ---------------------------------------------------------------------------
+
+  /// Create a paginated, infinite query.
+  ///
+  /// - [key] identifies the query in the cache.
+  /// - [queryFn] receives a page parameter and returns the data for that page.
+  /// - [initialPageParam] is the page parameter for the first page.
+  /// - [getNextPageParam] derives the next page param from the last page and
+  ///   all pages. Return `null` to signal there are no more pages.
+  /// - [getPreviousPageParam] derives the previous page param. Optional.
+  /// - [maxPages] limits the number of pages kept in memory (FIFO eviction).
+  /// - [stale], [enabled], [retry], [retryDelay], [shouldRetry],
+  ///   [networkMode], [refetchInterval], [refetchIntervalInBackground] work
+  ///   the same as for [query].
+  InfiniteQueryHandle<T, P> infiniteQuery<T, P>(
+    List<dynamic> key,
+    Future<T> Function(P pageParam) queryFn, {
+    required P initialPageParam,
+    required P? Function(T lastPage, List<T> allPages) getNextPageParam,
+    P? Function(T firstPage, List<T> allPages)? getPreviousPageParam,
+    Duration stale = Duration.zero,
+    bool enabled = true,
+    int? maxPages,
+    int retry = 3,
+    Duration Function(int attempt)? retryDelay,
+    bool Function(Object error)? shouldRetry,
+    NetworkMode networkMode = NetworkMode.online,
+    Duration? refetchInterval,
+    bool refetchIntervalInBackground = false,
+  }) {
+    final handle = InfiniteQueryHandle<T, P>(
+      key: key,
+      queryFn: queryFn,
+      initialPageParam: initialPageParam,
+      getNextPageParam: getNextPageParam,
+      getPreviousPageParam: getPreviousPageParam,
+      onStateChanged: _safeSetState,
+      staleTime: stale,
+      enabled: enabled,
+      maxPages: maxPages,
+      retryConfig: RetryConfig(
+        maxRetries: retry,
+        retryDelay: retryDelay != null
+            ? (attempt, {random}) => retryDelay(attempt)
+            : defaultRetryDelay,
+        shouldRetry: shouldRetry ?? defaultShouldRetry,
+        networkMode: networkMode,
+      ),
+      refetchInterval: refetchInterval,
+      refetchIntervalInBackground: refetchIntervalInBackground,
+    );
+    _infiniteQueries.add(handle);
     return handle;
   }
 
@@ -152,12 +220,15 @@ mixin QueryMixin<W extends StatefulWidget> on State<W> {
   /// - [optimisticUpdate] runs synchronously before the mutation to apply
   ///   an optimistic cache update. If the mutation fails, calling `rollback()`
   ///   in [onError] restores the previous data.
+  /// - [scope] groups mutations for serial execution. Two mutations with the
+  ///   same scope never run concurrently — the second waits for the first.
   MutationHandle<TData, TInput> mutation<TData, TInput>(
     Future<TData> Function(TInput input) mutationFn, {
     List<List<dynamic>>? invalidates,
     void Function(TData data)? onSuccess,
     void Function(Object error, void Function() rollback)? onError,
     void Function(TInput input)? optimisticUpdate,
+    String? scope,
   }) {
     final handle = MutationHandle<TData, TInput>(
       mutationFn: mutationFn,
@@ -167,6 +238,7 @@ mixin QueryMixin<W extends StatefulWidget> on State<W> {
       onSuccess: onSuccess,
       onError: onError,
       optimisticUpdate: optimisticUpdate,
+      scope: scope,
     );
     _mutations.add(handle);
     return handle;

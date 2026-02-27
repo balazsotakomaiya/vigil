@@ -8,6 +8,8 @@ void main() {
     late QueryCacheEntry entry;
 
     setUp(() {
+      // Use synchronous scheduling for tests.
+      NotifyManager.instance.scheduleFn = (cb) => cb();
       entry = QueryCacheEntry(serializedKey: '["todos"]');
     });
 
@@ -19,7 +21,7 @@ void main() {
       expect(entry.hasData, isFalse);
       expect(entry.hasError, isFalse);
       expect(entry.data, isNull);
-      expect(entry.fetchedAt, isNull);
+      expect(entry.dataUpdatedAt, 0);
     });
 
     test('isStaleFor returns true when no data fetched', () {
@@ -28,13 +30,22 @@ void main() {
 
     test('isStaleFor returns false for fresh data', () {
       entry.data = [1, 2, 3];
-      entry.fetchedAt = DateTime.now();
+      entry.dataUpdatedAt = DateTime.now().millisecondsSinceEpoch;
       expect(entry.isStaleFor(const Duration(minutes: 5)), isFalse);
     });
 
     test('isStaleFor returns true for old data', () {
       entry.data = [1, 2, 3];
-      entry.fetchedAt = DateTime.now().subtract(const Duration(minutes: 10));
+      entry.dataUpdatedAt = DateTime.now()
+          .subtract(const Duration(minutes: 10))
+          .millisecondsSinceEpoch;
+      expect(entry.isStaleFor(const Duration(minutes: 5)), isTrue);
+    });
+
+    test('isStaleFor returns true when invalidated', () {
+      entry.data = [1, 2, 3];
+      entry.dataUpdatedAt = DateTime.now().millisecondsSinceEpoch;
+      entry.isInvalidated = true;
       expect(entry.isStaleFor(const Duration(minutes: 5)), isTrue);
     });
 
@@ -95,14 +106,20 @@ void main() {
       });
 
       test('stores data on successful fetch', () async {
-        await entry.fetch(() async => 'hello');
+        await entry.fetch(
+          () async => 'hello',
+          retryConfig: const RetryConfig(maxRetries: 0),
+        );
         expect(entry.data, 'hello');
         expect(entry.hasData, isTrue);
-        expect(entry.fetchedAt, isNotNull);
+        expect(entry.dataUpdatedAt, isNot(0));
       });
 
       test('stores error on failed fetch', () async {
-        await entry.fetch(() async => throw Exception('boom'));
+        await entry.fetch(
+          () async => throw Exception('boom'),
+          retryConfig: const RetryConfig(maxRetries: 0),
+        );
         expect(entry.hasError, isTrue);
         expect(entry.error, isA<Exception>());
         expect(entry.stackTrace, isNotNull);
@@ -112,15 +129,24 @@ void main() {
         var notifications = 0;
         entry.addListener(() => notifications++);
 
-        await entry.fetch(() async => 42);
+        await entry.fetch(
+          () async => 42,
+          retryConfig: const RetryConfig(maxRetries: 0),
+        );
         expect(notifications, 1);
       });
 
       test('allows new fetch after previous completes', () async {
-        await entry.fetch(() async => 'first');
+        await entry.fetch(
+          () async => 'first',
+          retryConfig: const RetryConfig(maxRetries: 0),
+        );
         expect(entry.data, 'first');
 
-        await entry.fetch(() async => 'second');
+        await entry.fetch(
+          () async => 'second',
+          retryConfig: const RetryConfig(maxRetries: 0),
+        );
         expect(entry.data, 'second');
       });
     });

@@ -1,95 +1,211 @@
-/// Sealed class representing the state of a query.
+/// The data-availability axis of a query's state.
+enum QueryStatus {
+  /// No data has been received yet.
+  pending,
+
+  /// Data has been successfully received at least once.
+  success,
+
+  /// The last fetch attempt resulted in an error.
+  error,
+}
+
+/// The network-activity axis of a query's state.
+enum FetchStatus {
+  /// A fetch is currently in progress.
+  fetching,
+
+  /// A fetch was attempted but is paused (e.g. offline).
+  paused,
+
+  /// No fetch is in progress.
+  idle,
+}
+
+/// Immutable state of a query, using a dual-axis model.
 ///
-/// Use Dart 3 pattern matching to handle each state:
+/// The two axes are independent:
+/// - [status] tracks **data availability** (pending / success / error)
+/// - [fetchStatus] tracks **network activity** (fetching / paused / idle)
+///
+/// This allows representing states like "showing stale data while refetching
+/// in the background" (`status: success, fetchStatus: fetching`).
+///
+/// Use the convenience getters for common checks:
 /// ```dart
-/// switch (query.state) {
-///   QueryInitial() => ...,
-///   QueryLoading() => ...,
-///   QueryData(:final data) => ...,
-///   QueryError(:final error) => ...,
+/// if (state.isLoading) ...   // pending + fetching (first load)
+/// if (state.isRefetching) ... // success + fetching (background refetch)
+/// if (state.isError) ...     // last fetch errored
+/// ```
+///
+/// Pattern matching:
+/// ```dart
+/// switch (state) {
+///   QueryState(isLoading: true) => CircularProgressIndicator(),
+///   QueryState(isError: true, :final error) => Text('$error'),
+///   QueryState(isSuccess: true, :final data!) => TodoList(data),
+///   _ => SizedBox.shrink(),
 /// }
 /// ```
-sealed class QueryState<T> {
-  const QueryState();
-}
+class QueryState<T> {
+  const QueryState({
+    this.status = QueryStatus.pending,
+    this.fetchStatus = FetchStatus.idle,
+    this.data,
+    this.error,
+    this.stackTrace,
+    this.dataUpdatedAt = 0,
+    this.errorUpdatedAt = 0,
+    this.isInvalidated = false,
+    this.fetchFailureCount = 0,
+    this.fetchFailureReason,
+  });
 
-/// The query has not yet started fetching.
-///
-/// This is the state when [enabled] is `false` and no cached data exists.
-class QueryInitial<T> extends QueryState<T> {
-  const QueryInitial();
+  // ---------------------------------------------------------------------------
+  // Data axis
+  // ---------------------------------------------------------------------------
 
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) || other is QueryInitial<T>;
+  /// The data-availability status.
+  final QueryStatus status;
 
-  @override
-  int get hashCode => runtimeType.hashCode;
+  /// The cached data, if any.
+  final T? data;
 
-  @override
-  String toString() => 'QueryInitial<$T>()';
-}
+  /// The last error, if any.
+  final Object? error;
 
-/// The query is loading data for the first time (no cached data available).
-class QueryLoading<T> extends QueryState<T> {
-  const QueryLoading();
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) || other is QueryLoading<T>;
-
-  @override
-  int get hashCode => runtimeType.hashCode;
-
-  @override
-  String toString() => 'QueryLoading<$T>()';
-}
-
-/// The query has data available.
-class QueryData<T> extends QueryState<T> {
-  final T data;
-
-  /// `true` when stale data is shown while a background refetch is in progress.
-  final bool isRefetching;
-
-  const QueryData(this.data, {this.isRefetching = false});
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is QueryData<T> &&
-          data == other.data &&
-          isRefetching == other.isRefetching;
-
-  @override
-  int get hashCode => Object.hash(data, isRefetching);
-
-  @override
-  String toString() =>
-      'QueryData<$T>($data${isRefetching ? ', isRefetching: true' : ''})';
-}
-
-/// The query encountered an error.
-class QueryError<T> extends QueryState<T> {
-  final Object error;
+  /// Stack trace of the last error, if any.
   final StackTrace? stackTrace;
 
-  /// Previous data if available, enabling stale-while-revalidate patterns.
-  final T? staleData;
+  /// Timestamp (millisecondsSinceEpoch) when data was last successfully
+  /// fetched. `0` means never.
+  final int dataUpdatedAt;
 
-  const QueryError(this.error, {this.stackTrace, this.staleData});
+  /// Timestamp (millisecondsSinceEpoch) when the last error occurred.
+  /// `0` means never.
+  final int errorUpdatedAt;
+
+  /// Whether the query has been explicitly invalidated.
+  final bool isInvalidated;
+
+  // ---------------------------------------------------------------------------
+  // Network axis
+  // ---------------------------------------------------------------------------
+
+  /// The network-activity status.
+  final FetchStatus fetchStatus;
+
+  /// How many consecutive fetch attempts have failed (resets on success).
+  final int fetchFailureCount;
+
+  /// The reason for the most recent fetch failure, if any.
+  final Object? fetchFailureReason;
+
+  // ---------------------------------------------------------------------------
+  // Convenience getters — data axis
+  // ---------------------------------------------------------------------------
+
+  /// No data has been received yet.
+  bool get isPending => status == QueryStatus.pending;
+
+  /// Data has been successfully received at least once.
+  bool get isSuccess => status == QueryStatus.success;
+
+  /// The last fetch resulted in an error.
+  bool get isError => status == QueryStatus.error;
+
+  // ---------------------------------------------------------------------------
+  // Convenience getters — network axis
+  // ---------------------------------------------------------------------------
+
+  /// A fetch is currently in progress.
+  bool get isFetching => fetchStatus == FetchStatus.fetching;
+
+  /// A fetch is paused (e.g. offline).
+  bool get isPaused => fetchStatus == FetchStatus.paused;
+
+  /// No fetch is in progress.
+  bool get isIdle => fetchStatus == FetchStatus.idle;
+
+  // ---------------------------------------------------------------------------
+  // Convenience getters — combined
+  // ---------------------------------------------------------------------------
+
+  /// First load: no data yet and currently fetching.
+  bool get isLoading => isPending && isFetching;
+
+  /// Background refetch: have data and currently fetching.
+  bool get isRefetching => isSuccess && isFetching;
+
+  /// Have data (from success or previous success before error).
+  bool get hasData => data != null;
+
+  // ---------------------------------------------------------------------------
+  // copyWith
+  // ---------------------------------------------------------------------------
+
+  QueryState<T> copyWith({
+    QueryStatus? status,
+    FetchStatus? fetchStatus,
+    T? Function()? data,
+    Object? Function()? error,
+    StackTrace? Function()? stackTrace,
+    int? dataUpdatedAt,
+    int? errorUpdatedAt,
+    bool? isInvalidated,
+    int? fetchFailureCount,
+    Object? Function()? fetchFailureReason,
+  }) {
+    return QueryState<T>(
+      status: status ?? this.status,
+      fetchStatus: fetchStatus ?? this.fetchStatus,
+      data: data != null ? data() : this.data,
+      error: error != null ? error() : this.error,
+      stackTrace: stackTrace != null ? stackTrace() : this.stackTrace,
+      dataUpdatedAt: dataUpdatedAt ?? this.dataUpdatedAt,
+      errorUpdatedAt: errorUpdatedAt ?? this.errorUpdatedAt,
+      isInvalidated: isInvalidated ?? this.isInvalidated,
+      fetchFailureCount: fetchFailureCount ?? this.fetchFailureCount,
+      fetchFailureReason: fetchFailureReason != null
+          ? fetchFailureReason()
+          : this.fetchFailureReason,
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Equality
+  // ---------------------------------------------------------------------------
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is QueryError<T> &&
+      other is QueryState<T> &&
+          status == other.status &&
+          fetchStatus == other.fetchStatus &&
+          data == other.data &&
           error == other.error &&
-          staleData == other.staleData;
+          dataUpdatedAt == other.dataUpdatedAt &&
+          errorUpdatedAt == other.errorUpdatedAt &&
+          isInvalidated == other.isInvalidated &&
+          fetchFailureCount == other.fetchFailureCount &&
+          fetchFailureReason == other.fetchFailureReason;
 
   @override
-  int get hashCode => Object.hash(error, staleData);
+  int get hashCode => Object.hash(
+        status,
+        fetchStatus,
+        data,
+        error,
+        dataUpdatedAt,
+        errorUpdatedAt,
+        isInvalidated,
+        fetchFailureCount,
+        fetchFailureReason,
+      );
 
   @override
   String toString() =>
-      'QueryError<$T>($error${staleData != null ? ', staleData: $staleData' : ''})';
+      'QueryState<$T>(status: $status, fetchStatus: $fetchStatus, '
+      'data: $data, error: $error, '
+      'dataUpdatedAt: $dataUpdatedAt, isInvalidated: $isInvalidated)';
 }

@@ -1,5 +1,6 @@
 import 'dart:ui' show VoidCallback;
 
+import 'core/retryer.dart';
 import 'query_cache_entry.dart';
 import 'query_client.dart';
 import 'query_state.dart';
@@ -17,6 +18,7 @@ class QueryHandle<T> {
     bool refetchOnMount = true,
     bool enabled = true,
     T? placeholderData,
+    RetryConfig retryConfig = const RetryConfig(),
   })  : _key = key,
         _queryFn = queryFn,
         _client = client,
@@ -24,7 +26,8 @@ class QueryHandle<T> {
         _staleTime = staleTime,
         _refetchOnMount = refetchOnMount,
         _enabled = enabled,
-        _placeholderData = placeholderData {
+        _placeholderData = placeholderData,
+        _retryConfig = retryConfig {
     _entry = client.getOrCreateEntry(key, gcTime: gcTime);
     _entry.addListener(_onCacheEntryChanged);
     _computeInitialState();
@@ -39,6 +42,7 @@ class QueryHandle<T> {
   final bool _refetchOnMount;
   final bool _enabled;
   final T? _placeholderData;
+  final RetryConfig _retryConfig;
 
   late final QueryCacheEntry _entry;
   bool _disposed = false;
@@ -47,35 +51,25 @@ class QueryHandle<T> {
   // State
   // ---------------------------------------------------------------------------
 
-  QueryState<T> _state = const QueryInitial();
+  QueryState<T> _state = const QueryState<Never>();
 
   /// The current state of this query.
   QueryState<T> get state => _state;
 
-  /// Shorthand: the data if in [QueryData] state, otherwise `null`.
-  T? get data => switch (_state) {
-        QueryData<T>(:final data) => data,
-        QueryError<T>(:final staleData) => staleData,
-        _ => null,
-      };
+  /// Shorthand: the data if available, otherwise `null`.
+  T? get data => _state.data;
 
   /// `true` when the query is loading for the first time (no data yet).
-  bool get isLoading => _state is QueryLoading<T>;
+  bool get isLoading => _state.isLoading;
 
   /// `true` when the query is in an error state.
-  bool get isError => _state is QueryError<T>;
+  bool get isError => _state.isError;
 
   /// `true` when stale data is displayed and a background refetch is running.
-  bool get isRefetching => switch (_state) {
-        QueryData<T>(:final isRefetching) => isRefetching,
-        _ => false,
-      };
+  bool get isRefetching => _state.isRefetching;
 
-  /// The error object if in [QueryError] state, otherwise `null`.
-  Object? get error => switch (_state) {
-        QueryError<T>(:final error) => error,
-        _ => null,
-      };
+  /// The error object if in error state, otherwise `null`.
+  Object? get error => _state.error;
 
   // ---------------------------------------------------------------------------
   // Actions
@@ -95,9 +89,6 @@ class QueryHandle<T> {
   }
 
   /// Optimistically update the cached data.
-  ///
-  /// The previous value is stored internally so that [MutationHandle] can
-  /// perform a rollback on error.
   void setData(T Function(T prev) updater) {
     if (_disposed) return;
     final current = _entry.data as T;
@@ -125,21 +116,36 @@ class QueryHandle<T> {
   void _computeInitialState() {
     if (_entry.hasData) {
       final isStale = _isStale;
-      _state = QueryData<T>(
-        _entry.data as T,
-        isRefetching: isStale && _refetchOnMount && _enabled,
+      final willRefetch = isStale && _refetchOnMount && _enabled;
+      _state = QueryState<T>(
+        status: QueryStatus.success,
+        fetchStatus: willRefetch ? FetchStatus.fetching : FetchStatus.idle,
+        data: _entry.data as T,
+        dataUpdatedAt: _entry.dataUpdatedAt,
       );
     } else if (_entry.hasError) {
-      _state = QueryError<T>(
-        _entry.error!,
+      _state = QueryState<T>(
+        status: QueryStatus.error,
+        fetchStatus: FetchStatus.idle,
+        error: _entry.error,
         stackTrace: _entry.stackTrace,
       );
     } else if (_placeholderData != null) {
-      _state = QueryData<T>(_placeholderData as T, isRefetching: true);
+      _state = QueryState<T>(
+        status: QueryStatus.success,
+        fetchStatus: FetchStatus.fetching,
+        data: _placeholderData,
+      );
     } else if (_enabled) {
-      _state = const QueryLoading();
+      _state = const QueryState(
+        status: QueryStatus.pending,
+        fetchStatus: FetchStatus.fetching,
+      );
     } else {
-      _state = const QueryInitial();
+      _state = const QueryState(
+        status: QueryStatus.pending,
+        fetchStatus: FetchStatus.idle,
+      );
     }
   }
 
@@ -160,10 +166,33 @@ class QueryHandle<T> {
 
     // If there's existing data, mark as refetching.
     if (_entry.hasData) {
-      _updateState(QueryData<T>(_entry.data as T, isRefetching: true));
+      _dispatch(_state.copyWith(
+        status: QueryStatus.success,
+        fetchStatus: FetchStatus.fetching,
+        data: () => _entry.data as T,
+        dataUpdatedAt: _entry.dataUpdatedAt,
+      ));
     }
 
-    _entry.fetch(() => _queryFn());
+    _entry.fetch(
+      () => _queryFn(),
+      retryConfig: _retryConfig,
+      onFailed: (failureCount, error) {
+        if (_disposed) return;
+        _dispatch(_state.copyWith(
+          fetchFailureCount: failureCount,
+          fetchFailureReason: () => error,
+        ));
+      },
+      onPause: () {
+        if (_disposed) return;
+        _dispatch(_state.copyWith(fetchStatus: FetchStatus.paused));
+      },
+      onContinue: () {
+        if (_disposed) return;
+        _dispatch(_state.copyWith(fetchStatus: FetchStatus.fetching));
+      },
+    );
   }
 
   void _onCacheEntryChanged() {
@@ -171,22 +200,29 @@ class QueryHandle<T> {
 
     // Detect if a refetch will be needed (entry was invalidated).
     final needsRefetch =
-        _entry.fetchedAt == null && !_entry.isFetching && _enabled;
+        _entry.isInvalidated && !_entry.isFetching && _enabled;
 
     if (_entry.hasData && _entry.error == null) {
-      _updateState(QueryData<T>(
-        _entry.data as T,
-        isRefetching: needsRefetch,
+      _dispatch(QueryState<T>(
+        status: QueryStatus.success,
+        fetchStatus: needsRefetch ? FetchStatus.fetching : FetchStatus.idle,
+        data: _entry.data as T,
+        dataUpdatedAt: _entry.dataUpdatedAt,
       ));
     } else if (_entry.hasError && _entry.hasData) {
-      _updateState(QueryError<T>(
-        _entry.error!,
+      _dispatch(QueryState<T>(
+        status: QueryStatus.error,
+        fetchStatus: FetchStatus.idle,
+        data: _entry.data as T,
+        error: _entry.error,
         stackTrace: _entry.stackTrace,
-        staleData: _entry.data as T,
+        dataUpdatedAt: _entry.dataUpdatedAt,
       ));
     } else if (_entry.hasError) {
-      _updateState(QueryError<T>(
-        _entry.error!,
+      _dispatch(QueryState<T>(
+        status: QueryStatus.error,
+        fetchStatus: FetchStatus.idle,
+        error: _entry.error,
         stackTrace: _entry.stackTrace,
       ));
     }
@@ -196,7 +232,7 @@ class QueryHandle<T> {
     }
   }
 
-  void _updateState(QueryState<T> newState) {
+  void _dispatch(QueryState<T> newState) {
     if (_state == newState) return;
     _state = newState;
     _onStateChanged();

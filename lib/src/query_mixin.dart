@@ -1,5 +1,10 @@
+import 'dart:ui' show VoidCallback;
+
 import 'package:flutter/widgets.dart';
 
+import 'core/focus_manager.dart';
+import 'core/network_mode.dart';
+import 'core/retryer.dart';
 import 'mutation_handle.dart';
 import 'query_client.dart';
 import 'query_client_provider.dart';
@@ -23,19 +28,17 @@ import 'query_handle.dart';
 ///
 ///   @override
 ///   Widget build(BuildContext context) {
-///     return switch (todos.state) {
-///       QueryLoading() => CircularProgressIndicator(),
-///       QueryError(:final error) => Text('$error'),
-///       QueryData(:final data) => TodoList(data),
-///       _ => SizedBox.shrink(),
-///     };
+///     final s = todos.state;
+///     if (s.isLoading) return CircularProgressIndicator();
+///     if (s.isError) return Text('${s.error}');
+///     return TodoList(s.data!);
 ///   }
 /// }
 /// ```
 mixin QueryMixin<W extends StatefulWidget> on State<W> {
   final List<QueryHandle<dynamic>> _queries = [];
   final List<MutationHandle<dynamic, dynamic>> _mutations = [];
-  _AppLifecycleObserver? _lifecycleObserver;
+  VoidCallback? _focusUnsub;
 
   /// Resolve the [QueryClient] — prefer inherited, fall back to singleton.
   QueryClient get _queryClient {
@@ -52,15 +55,12 @@ mixin QueryMixin<W extends StatefulWidget> on State<W> {
   @override
   void initState() {
     super.initState();
-    _lifecycleObserver = _AppLifecycleObserver(_onAppResumed);
-    WidgetsBinding.instance.addObserver(_lifecycleObserver!);
+    _focusUnsub = FocusManager.instance.subscribe(_onFocusChanged);
   }
 
   @override
   void dispose() {
-    if (_lifecycleObserver != null) {
-      WidgetsBinding.instance.removeObserver(_lifecycleObserver!);
-    }
+    _focusUnsub?.call();
     for (final q in _queries) {
       q.dispose();
     }
@@ -70,9 +70,11 @@ mixin QueryMixin<W extends StatefulWidget> on State<W> {
     super.dispose();
   }
 
-  void _onAppResumed() {
-    for (final q in _queries) {
-      q.refetchIfStale();
+  void _onFocusChanged() {
+    if (FocusManager.instance.isFocused) {
+      for (final q in _queries) {
+        q.refetchIfStale();
+      }
     }
   }
 
@@ -93,6 +95,13 @@ mixin QueryMixin<W extends StatefulWidget> on State<W> {
   ///   the widget mounts and data is stale (default: true).
   /// - [enabled] can disable automatic fetching (default: true).
   /// - [placeholderData] is shown while the first fetch is in progress.
+  /// - [retry] is the maximum number of retries on failure (default: 3).
+  /// - [retryDelay] computes the delay before each retry (default: exponential
+  ///   backoff with full jitter, capped at 30s).
+  /// - [shouldRetry] decides whether a given error should be retried
+  ///   (default: always retry).
+  /// - [networkMode] controls fetch behavior relative to connectivity
+  ///   (default: [NetworkMode.online]).
   QueryHandle<T> query<T>(
     List<dynamic> key,
     Future<T> Function() queryFn, {
@@ -101,6 +110,10 @@ mixin QueryMixin<W extends StatefulWidget> on State<W> {
     bool refetchOnMount = true,
     bool enabled = true,
     T? placeholderData,
+    int retry = 3,
+    Duration Function(int attempt)? retryDelay,
+    bool Function(Object error)? shouldRetry,
+    NetworkMode networkMode = NetworkMode.online,
   }) {
     final handle = QueryHandle<T>(
       key: key,
@@ -112,6 +125,14 @@ mixin QueryMixin<W extends StatefulWidget> on State<W> {
       refetchOnMount: refetchOnMount,
       enabled: enabled,
       placeholderData: placeholderData,
+      retryConfig: RetryConfig(
+        maxRetries: retry,
+        retryDelay: retryDelay != null
+            ? (attempt, {random}) => retryDelay(attempt)
+            : defaultRetryDelay,
+        shouldRetry: shouldRetry ?? defaultShouldRetry,
+        networkMode: networkMode,
+      ),
     );
     _queries.add(handle);
     return handle;
@@ -168,23 +189,6 @@ mixin QueryMixin<W extends StatefulWidget> on State<W> {
     if (mounted) {
       // ignore: invalid_use_of_protected_member
       setState(() {});
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// App lifecycle observer
-// ---------------------------------------------------------------------------
-
-class _AppLifecycleObserver extends WidgetsBindingObserver {
-  _AppLifecycleObserver(this.onResumed);
-
-  final VoidCallback onResumed;
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      onResumed();
     }
   }
 }

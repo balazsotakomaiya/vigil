@@ -3,72 +3,141 @@ import 'package:vigil/vigil.dart';
 
 void main() {
   group('QueryState', () {
-    test('QueryInitial equality', () {
-      expect(const QueryInitial<int>(), equals(const QueryInitial<int>()));
+    test('default state is pending + idle', () {
+      const state = QueryState<int>();
+      expect(state.isPending, isTrue);
+      expect(state.isIdle, isTrue);
+      expect(state.isLoading, isFalse);
+      expect(state.data, isNull);
+      expect(state.error, isNull);
     });
 
-    test('QueryLoading equality', () {
-      expect(const QueryLoading<int>(), equals(const QueryLoading<int>()));
+    test('isLoading = pending + fetching', () {
+      const state = QueryState<int>(
+        status: QueryStatus.pending,
+        fetchStatus: FetchStatus.fetching,
+      );
+      expect(state.isLoading, isTrue);
+      expect(state.isPending, isTrue);
+      expect(state.isFetching, isTrue);
     });
 
-    test('QueryData equality', () {
-      expect(const QueryData<int>(42), equals(const QueryData<int>(42)));
+    test('isRefetching = success + fetching', () {
+      const state = QueryState<int>(
+        status: QueryStatus.success,
+        fetchStatus: FetchStatus.fetching,
+        data: 42,
+      );
+      expect(state.isRefetching, isTrue);
+      expect(state.isSuccess, isTrue);
+      expect(state.isFetching, isTrue);
+    });
+
+    test('error state', () {
+      const state = QueryState<int>(
+        status: QueryStatus.error,
+        fetchStatus: FetchStatus.idle,
+        error: 'fail',
+      );
+      expect(state.isError, isTrue);
+      expect(state.error, 'fail');
+      expect(state.isIdle, isTrue);
+    });
+
+    test('paused state', () {
+      const state = QueryState<int>(
+        status: QueryStatus.pending,
+        fetchStatus: FetchStatus.paused,
+      );
+      expect(state.isPaused, isTrue);
+      expect(state.isFetching, isFalse);
+    });
+
+    test('error with stale data', () {
+      const state = QueryState<int>(
+        status: QueryStatus.error,
+        fetchStatus: FetchStatus.idle,
+        data: 42,
+        error: 'fail',
+      );
+      expect(state.isError, isTrue);
+      expect(state.hasData, isTrue);
+      expect(state.data, 42);
+      expect(state.error, 'fail');
+    });
+
+    test('equality', () {
       expect(
-        const QueryData<int>(42),
-        isNot(equals(const QueryData<int>(99))),
+        const QueryState<int>(status: QueryStatus.success, data: 42),
+        equals(const QueryState<int>(status: QueryStatus.success, data: 42)),
       );
       expect(
-        const QueryData<int>(42, isRefetching: true),
-        isNot(equals(const QueryData<int>(42))),
+        const QueryState<int>(status: QueryStatus.success, data: 42),
+        isNot(equals(const QueryState<int>(status: QueryStatus.success, data: 99))),
+      );
+      expect(
+        const QueryState<int>(
+          status: QueryStatus.success,
+          fetchStatus: FetchStatus.fetching,
+          data: 42,
+        ),
+        isNot(equals(const QueryState<int>(
+          status: QueryStatus.success,
+          fetchStatus: FetchStatus.idle,
+          data: 42,
+        ))),
       );
     });
 
-    test('QueryError equality', () {
-      expect(
-        const QueryError<int>('fail'),
-        equals(const QueryError<int>('fail')),
+    test('copyWith preserves unchanged fields', () {
+      const original = QueryState<int>(
+        status: QueryStatus.success,
+        fetchStatus: FetchStatus.idle,
+        data: 42,
+        dataUpdatedAt: 1000,
       );
-      expect(
-        const QueryError<int>('fail', staleData: 42),
-        equals(const QueryError<int>('fail', staleData: 42)),
-      );
-      expect(
-        const QueryError<int>('fail'),
-        isNot(equals(const QueryError<int>('other'))),
-      );
+      final copied = original.copyWith(fetchStatus: FetchStatus.fetching);
+      expect(copied.status, QueryStatus.success);
+      expect(copied.data, 42);
+      expect(copied.dataUpdatedAt, 1000);
+      expect(copied.fetchStatus, FetchStatus.fetching);
     });
 
-    test('pattern matching works', () {
-      final QueryState<int> state = const QueryData<int>(42);
+    test('copyWith can set data to null via closure', () {
+      const original = QueryState<int>(
+        status: QueryStatus.success,
+        data: 42,
+      );
+      final copied = original.copyWith(data: () => null);
+      expect(copied.data, isNull);
+    });
+
+    test('pattern matching works with convenience getters', () {
+      const QueryState<int> state = QueryState<int>(
+        status: QueryStatus.success,
+        data: 42,
+      );
       final result = switch (state) {
-        QueryInitial() => 'initial',
-        QueryLoading() => 'loading',
-        QueryData(:final data) => 'data: $data',
-        QueryError(:final error) => 'error: $error',
+        QueryState(isLoading: true) => 'loading',
+        QueryState(isError: true, :final error) => 'error: $error',
+        QueryState(isSuccess: true, :final data) => 'data: $data',
+        _ => 'other',
       };
       expect(result, 'data: 42');
     });
 
-    test('pattern matching with isRefetching', () {
-      final QueryState<int> state =
-          const QueryData<int>(42, isRefetching: true);
+    test('pattern matching with refetching', () {
+      const QueryState<int> state = QueryState<int>(
+        status: QueryStatus.success,
+        fetchStatus: FetchStatus.fetching,
+        data: 42,
+      );
       final result = switch (state) {
-        QueryData(:final data, :final isRefetching) =>
-          'data: $data, refetching: $isRefetching',
+        QueryState(isRefetching: true, :final data) =>
+          'refetching: $data',
         _ => 'other',
       };
-      expect(result, 'data: 42, refetching: true');
-    });
-
-    test('QueryError exposes staleData', () {
-      final QueryState<int> state =
-          const QueryError<int>('fail', staleData: 42);
-      final result = switch (state) {
-        QueryError(:final error, :final staleData) =>
-          'error: $error, stale: $staleData',
-        _ => 'other',
-      };
-      expect(result, 'error: fail, stale: 42');
+      expect(result, 'refetching: 42');
     });
   });
 }

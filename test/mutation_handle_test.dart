@@ -9,6 +9,7 @@ void main() {
     late List<String> stateLog;
 
     setUp(() {
+      NotifyManager.instance.scheduleFn = (cb) => cb();
       client = QueryClient();
       stateLog = [];
     });
@@ -113,7 +114,7 @@ void main() {
     test('invalidates queries on success', () async {
       final entry = client.getOrCreateEntry(['todos']);
       entry.data = [1, 2, 3];
-      entry.fetchedAt = DateTime.now();
+      entry.dataUpdatedAt = DateTime.now().millisecondsSinceEpoch;
 
       final m = createMutation<String, void>(
         mutationFn: (_) async => 'ok',
@@ -124,8 +125,8 @@ void main() {
 
       await m.mutate(null);
 
-      // Entry should have been invalidated (fetchedAt cleared).
-      expect(entry.fetchedAt, isNull);
+      // Entry should have been invalidated.
+      expect(entry.isInvalidated, isTrue);
 
       m.dispose();
     });
@@ -133,8 +134,7 @@ void main() {
     test('does not invalidate on error', () async {
       final entry = client.getOrCreateEntry(['todos']);
       entry.data = [1, 2, 3];
-      final before = DateTime.now();
-      entry.fetchedAt = before;
+      entry.dataUpdatedAt = DateTime.now().millisecondsSinceEpoch;
 
       final m = createMutation<String, void>(
         mutationFn: (_) async => throw Exception('fail'),
@@ -147,7 +147,7 @@ void main() {
       await m.mutate(null);
 
       // Entry should NOT have been invalidated.
-      expect(entry.fetchedAt, before);
+      expect(entry.isInvalidated, isFalse);
 
       m.dispose();
     });
@@ -156,7 +156,7 @@ void main() {
       test('applies optimistic update before mutation completes', () async {
         final entry = client.getOrCreateEntry(['todos']);
         entry.data = [1, 2, 3];
-        entry.fetchedAt = DateTime.now();
+        entry.dataUpdatedAt = DateTime.now().millisecondsSinceEpoch;
 
         final completer = Completer<String>();
         late List<dynamic> dataAfterOptimistic;
@@ -187,7 +187,7 @@ void main() {
       test('rollback restores data on error', () async {
         final entry = client.getOrCreateEntry(['todos']);
         entry.data = [1, 2, 3];
-        entry.fetchedAt = DateTime.now();
+        entry.dataUpdatedAt = DateTime.now().millisecondsSinceEpoch;
 
         void Function()? rollbackFn;
 

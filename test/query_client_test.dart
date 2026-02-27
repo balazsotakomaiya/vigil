@@ -6,6 +6,7 @@ void main() {
     late QueryClient client;
 
     setUp(() {
+      NotifyManager.instance.scheduleFn = (cb) => cb();
       client = QueryClient();
     });
 
@@ -99,16 +100,30 @@ void main() {
         client.setQueryData(['todos'], 'data');
         expect(entry.error, isNull);
       });
+
+      test('setQueryData updates timestamp', () {
+        final entry = client.getOrCreateEntry(['todos']);
+        expect(entry.dataUpdatedAt, 0);
+        client.setQueryData(['todos'], 'data');
+        expect(entry.dataUpdatedAt, isNot(0));
+      });
+
+      test('setQueryData clears invalidation', () {
+        final entry = client.getOrCreateEntry(['todos']);
+        entry.isInvalidated = true;
+        client.setQueryData(['todos'], 'data');
+        expect(entry.isInvalidated, isFalse);
+      });
     });
 
     group('invalidateQueries', () {
       test('invalidates exact key match', () {
         final entry = client.getOrCreateEntry(['todos']);
         entry.data = [1, 2, 3];
-        entry.fetchedAt = DateTime.now();
+        entry.dataUpdatedAt = DateTime.now().millisecondsSinceEpoch;
 
         client.invalidateQueries(['todos']);
-        expect(entry.fetchedAt, isNull);
+        expect(entry.isInvalidated, isTrue);
       });
 
       test('invalidates prefix matches', () {
@@ -119,15 +134,15 @@ void main() {
 
         for (final e in [e1, e2, e3, e4]) {
           e.data = 'data';
-          e.fetchedAt = DateTime.now();
+          e.dataUpdatedAt = DateTime.now().millisecondsSinceEpoch;
         }
 
         client.invalidateQueries(['todos']);
 
-        expect(e1.fetchedAt, isNull); // exact match
-        expect(e2.fetchedAt, isNull); // prefix match
-        expect(e3.fetchedAt, isNull); // prefix match
-        expect(e4.fetchedAt, isNotNull); // unrelated — not invalidated
+        expect(e1.isInvalidated, isTrue); // exact match
+        expect(e2.isInvalidated, isTrue); // prefix match
+        expect(e3.isInvalidated, isTrue); // prefix match
+        expect(e4.isInvalidated, isFalse); // unrelated
       });
 
       test('does not match partial key segments', () {
@@ -136,19 +151,19 @@ void main() {
 
         for (final e in [e1, e2]) {
           e.data = 'data';
-          e.fetchedAt = DateTime.now();
+          e.dataUpdatedAt = DateTime.now().millisecondsSinceEpoch;
         }
 
         client.invalidateQueries(['todos']);
 
-        expect(e1.fetchedAt, isNull); // exact match
-        expect(e2.fetchedAt, isNotNull); // not a prefix match
+        expect(e1.isInvalidated, isTrue); // exact match
+        expect(e2.isInvalidated, isFalse); // not a prefix match
       });
 
       test('notifies listeners on invalidation', () {
         final entry = client.getOrCreateEntry(['todos']);
         entry.data = 'data';
-        entry.fetchedAt = DateTime.now();
+        entry.dataUpdatedAt = DateTime.now().millisecondsSinceEpoch;
 
         var notified = false;
         entry.addListener(() => notified = true);
@@ -185,7 +200,7 @@ void main() {
       test('snapshots and restores data', () {
         final entry = client.getOrCreateEntry(['todos']);
         entry.data = [1, 2, 3];
-        entry.fetchedAt = DateTime.now();
+        entry.dataUpdatedAt = DateTime.now().millisecondsSinceEpoch;
 
         final snapshot = client.snapshotEntries([
           ['todos']
@@ -232,6 +247,79 @@ void main() {
         QueryClient.resetInstance();
         final b = QueryClient.instance;
         expect(identical(a, b), isFalse);
+      });
+    });
+
+    group('three-layer option cascade', () {
+      test('global defaults are returned when no other layers set', () {
+        final c = QueryClient(
+          defaultQueryOptions: const QueryDefaults(
+            staleTime: Duration(minutes: 5),
+            retry: 1,
+          ),
+        );
+        final resolved = c.resolveQueryOptions(
+          ['todos'],
+          const QueryDefaults(),
+        );
+        expect(resolved.staleTime, const Duration(minutes: 5));
+        expect(resolved.retry, 1);
+        c.dispose();
+      });
+
+      test('per-key defaults override global', () {
+        final c = QueryClient(
+          defaultQueryOptions: const QueryDefaults(
+            staleTime: Duration(minutes: 5),
+            retry: 3,
+          ),
+        );
+        c.setQueryDefaults(['todos'], const QueryDefaults(
+          staleTime: Duration(minutes: 1),
+        ));
+        final resolved = c.resolveQueryOptions(
+          ['todos'],
+          const QueryDefaults(),
+        );
+        expect(resolved.staleTime, const Duration(minutes: 1));
+        expect(resolved.retry, 3); // inherited from global
+        c.dispose();
+      });
+
+      test('per-call overrides per-key', () {
+        final c = QueryClient(
+          defaultQueryOptions: const QueryDefaults(retry: 3),
+        );
+        c.setQueryDefaults(['todos'], const QueryDefaults(
+          staleTime: Duration(minutes: 1),
+        ));
+        final resolved = c.resolveQueryOptions(
+          ['todos'],
+          const QueryDefaults(staleTime: Duration(seconds: 30)),
+        );
+        expect(resolved.staleTime, const Duration(seconds: 30));
+        expect(resolved.retry, 3);
+        c.dispose();
+      });
+
+      test('per-key matches prefix', () {
+        final c = QueryClient();
+        c.setQueryDefaults(['todos'], const QueryDefaults(
+          staleTime: Duration(minutes: 10),
+        ));
+        final resolved = c.resolveQueryOptions(
+          ['todos', 'active'],
+          const QueryDefaults(),
+        );
+        expect(resolved.staleTime, const Duration(minutes: 10));
+        c.dispose();
+      });
+
+      test('merge with null preserves existing values', () {
+        const a = QueryDefaults(staleTime: Duration(minutes: 5), retry: 3);
+        final b = a.merge(null);
+        expect(b.staleTime, const Duration(minutes: 5));
+        expect(b.retry, 3);
       });
     });
   });

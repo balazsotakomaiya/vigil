@@ -12,16 +12,23 @@
 ///
 ///   @override
 ///   Widget build(BuildContext context) {
-///     return switch (todos.state) {
-///       QueryLoading() => CircularProgressIndicator(),
-///       QueryError(:final error) => Text('$error'),
-///       QueryData(:final data) => TodoList(data),
-///       _ => SizedBox.shrink(),
-///     };
+///     final s = todos.state;
+///     if (s.isLoading) return CircularProgressIndicator();
+///     if (s.isError) return Text('${s.error}');
+///     return TodoList(s.data!);
 ///   }
 /// }
 /// ```
 library vigil;
+
+// Core infrastructure
+export 'src/core/subscribable.dart';
+export 'src/core/notify_manager.dart';
+export 'src/core/focus_manager.dart';
+export 'src/core/online_manager.dart';
+export 'src/core/network_mode.dart';
+export 'src/core/retryer.dart';
+export 'src/core/query_defaults.dart';
 
 // State types
 export 'src/query_state.dart';

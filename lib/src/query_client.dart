@@ -1,5 +1,7 @@
 import 'dart:convert' show jsonEncode;
 
+import 'core/notify_manager.dart';
+import 'core/query_defaults.dart';
 import 'query_cache_entry.dart';
 
 /// Global cache for query data.
@@ -7,10 +9,15 @@ import 'query_cache_entry.dart';
 /// The client manages a `Map<String, QueryCacheEntry>` keyed by the JSON
 /// serialization of query keys (e.g. `'["todos"]'`).
 ///
+/// Supports a three-layer option cascade: global defaults → per-key defaults
+/// → per-call options. Set global defaults via the constructor, per-key
+/// defaults via [setQueryDefaults], and per-call options via [QueryMixin.query].
+///
 /// Prefer obtaining the client via [QueryClientProvider]; a singleton fallback
 /// is available as [QueryClient.instance].
 class QueryClient {
-  QueryClient();
+  QueryClient({QueryDefaults? defaultQueryOptions})
+      : _globalDefaults = defaultQueryOptions ?? const QueryDefaults();
 
   // ---------------------------------------------------------------------------
   // Singleton
@@ -28,6 +35,49 @@ class QueryClient {
   static void resetInstance() {
     _instance?.dispose();
     _instance = null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Option cascade
+  // ---------------------------------------------------------------------------
+
+  final QueryDefaults _globalDefaults;
+  final Map<String, QueryDefaults> _queryDefaults = {};
+
+  /// Set default options for all queries whose key starts with [keyPrefix].
+  ///
+  /// These defaults sit between the global defaults and per-call options
+  /// in the three-layer cascade.
+  void setQueryDefaults(List<dynamic> keyPrefix, QueryDefaults defaults) {
+    _queryDefaults[serializeKey(keyPrefix)] = defaults;
+  }
+
+  /// Resolve options: global → per-key → per-call.
+  QueryDefaults resolveQueryOptions(
+    List<dynamic> key,
+    QueryDefaults perCall,
+  ) {
+    final perKey = _findMatchingDefaults(key);
+    return _globalDefaults.merge(perKey).merge(perCall);
+  }
+
+  QueryDefaults? _findMatchingDefaults(List<dynamic> key) {
+    final serialized = serializeKey(key);
+
+    // Find the most specific (longest) matching prefix.
+    String? bestMatch;
+    for (final prefix in _queryDefaults.keys) {
+      if (_keyMatchesPrefix(
+        serialized,
+        prefix.substring(0, prefix.length - 1),
+        prefix,
+      )) {
+        if (bestMatch == null || prefix.length > bestMatch.length) {
+          bestMatch = prefix;
+        }
+      }
+    }
+    return bestMatch != null ? _queryDefaults[bestMatch] : null;
   }
 
   // ---------------------------------------------------------------------------
@@ -72,7 +122,8 @@ class QueryClient {
     final entry = _cache[serialized];
     if (entry != null) {
       entry.data = data;
-      entry.fetchedAt = DateTime.now();
+      entry.dataUpdatedAt = DateTime.now().millisecondsSinceEpoch;
+      entry.isInvalidated = false;
       entry.error = null;
       entry.stackTrace = null;
       entry.notifyListeners();
@@ -84,7 +135,8 @@ class QueryClient {
     final entry = _cache[serializedKey];
     if (entry != null) {
       entry.data = data;
-      entry.fetchedAt = DateTime.now();
+      entry.dataUpdatedAt = DateTime.now().millisecondsSinceEpoch;
+      entry.isInvalidated = false;
       entry.error = null;
       entry.stackTrace = null;
       entry.notifyListeners();
@@ -100,26 +152,27 @@ class QueryClient {
   /// Prefix matching: `invalidateQueries(['todos'])` invalidates `['todos']`,
   /// `['todos', 'active']`, `['todos', 'completed']`, etc.
   ///
-  /// Invalidated entries have their [fetchedAt] cleared so they are considered
-  /// stale on next access, and listeners are notified immediately to trigger
-  /// refetches.
+  /// Invalidated entries are marked so they are considered stale on next access,
+  /// and listeners are notified immediately to trigger refetches.
   void invalidateQueries(List<dynamic> keyPrefix) {
-    final prefix = serializeKey(keyPrefix);
-    // A serialized key `'["todos","active"]'` starts with the serialized
-    // prefix `'["todos"'` (without trailing `]`) when it's a true prefix.
-    //
-    // We strip the trailing `]` from the prefix so that:
-    //   '["todos"]'           starts with '["todos"'  ✓
-    //   '["todos","active"]'  starts with '["todos"'  ✓
-    //   '["todosX"]'          starts with '["todos"'  ✗ (handled below)
-    final prefixWithoutClose = prefix.substring(0, prefix.length - 1);
+    NotifyManager.instance.batch(() {
+      final prefix = serializeKey(keyPrefix);
+      // A serialized key `'["todos","active"]'` starts with the serialized
+      // prefix `'["todos"'` (without trailing `]`) when it's a true prefix.
+      //
+      // We strip the trailing `]` from the prefix so that:
+      //   '["todos"]'           starts with '["todos"'  ✓
+      //   '["todos","active"]'  starts with '["todos"'  ✓
+      //   '["todosX"]'          starts with '["todos"'  ✗ (handled below)
+      final prefixWithoutClose = prefix.substring(0, prefix.length - 1);
 
-    for (final entry in _cache.entries) {
-      if (_keyMatchesPrefix(entry.key, prefixWithoutClose, prefix)) {
-        entry.value.fetchedAt = null; // mark stale
-        entry.value.notifyListeners();
+      for (final entry in _cache.entries) {
+        if (_keyMatchesPrefix(entry.key, prefixWithoutClose, prefix)) {
+          entry.value.isInvalidated = true;
+          entry.value.notifyListeners();
+        }
       }
-    }
+    });
   }
 
   /// Check if [serializedKey] matches the given prefix.

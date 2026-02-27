@@ -39,24 +39,35 @@ class TestWidgetState extends State<TestWidget> with QueryMixin {
     refetchOnMount: widget.refetchOnMount,
     enabled: widget.enabled,
     placeholderData: widget.placeholderData,
+    retry: 0,
   );
 
   @override
   Widget build(BuildContext context) {
-    return switch (data.state) {
-      QueryInitial() => const Text('initial', textDirection: TextDirection.ltr),
-      QueryLoading() => const Text('loading', textDirection: TextDirection.ltr),
-      QueryData(:final data, :final isRefetching) => Text(
-          isRefetching ? 'refetching:$data' : 'data:$data',
+    final s = data.state;
+    if (s.isLoading) {
+      return const Text('loading', textDirection: TextDirection.ltr);
+    }
+    if (s.isError) {
+      final staleData = s.data;
+      if (staleData != null) {
+        return Text(
+          'error:${s.error} stale:$staleData',
           textDirection: TextDirection.ltr,
-        ),
-      QueryError(:final error, :final staleData) => Text(
-          staleData != null
-              ? 'error:$error stale:$staleData'
-              : 'error:$error',
-          textDirection: TextDirection.ltr,
-        ),
-    };
+        );
+      }
+      return Text('error:${s.error}', textDirection: TextDirection.ltr);
+    }
+    if (s.isRefetching) {
+      return Text(
+        'refetching:${s.data}',
+        textDirection: TextDirection.ltr,
+      );
+    }
+    if (s.isSuccess) {
+      return Text('data:${s.data}', textDirection: TextDirection.ltr);
+    }
+    return const Text('initial', textDirection: TextDirection.ltr);
   }
 }
 
@@ -105,6 +116,10 @@ class MutationWidgetState extends State<MutationWidget> with QueryMixin {
 }
 
 void main() {
+  setUp(() {
+    NotifyManager.instance.scheduleFn = (cb) => cb();
+  });
+
   group('QueryMixin widget tests', () {
     late QueryClient client;
 
@@ -149,7 +164,7 @@ void main() {
       // Prime the cache.
       final entry = client.getOrCreateEntry(['cached']);
       entry.data = 'cached-value';
-      entry.fetchedAt = DateTime.now();
+      entry.dataUpdatedAt = DateTime.now().millisecondsSinceEpoch;
 
       await tester.pumpWidget(TestWidget(
         queryKey: ['cached'],
@@ -165,8 +180,9 @@ void main() {
       // Prime cache with stale data.
       final entry = client.getOrCreateEntry(['swr']);
       entry.data = 'old';
-      entry.fetchedAt =
-          DateTime.now().subtract(const Duration(minutes: 10));
+      entry.dataUpdatedAt = DateTime.now()
+          .subtract(const Duration(minutes: 10))
+          .millisecondsSinceEpoch;
 
       final completer = Completer<String>();
 
@@ -303,7 +319,7 @@ void main() {
     testWidgets('mutation invalidates queries on success', (tester) async {
       final entry = client.getOrCreateEntry(['todos']);
       entry.data = [1, 2, 3];
-      entry.fetchedAt = DateTime.now();
+      entry.dataUpdatedAt = DateTime.now().millisecondsSinceEpoch;
 
       await tester.pumpWidget(MutationWidget(
         mutationFn: (input) async => 'ok',
@@ -317,7 +333,7 @@ void main() {
       await state.doMutation.mutate('input');
       await tester.pump();
 
-      expect(entry.fetchedAt, isNull); // invalidated
+      expect(entry.isInvalidated, isTrue); // invalidated
     });
   });
 
@@ -328,7 +344,7 @@ void main() {
       // Prime data on custom client.
       final entry = customClient.getOrCreateEntry(['provided']);
       entry.data = 'from-provider';
-      entry.fetchedAt = DateTime.now();
+      entry.dataUpdatedAt = DateTime.now().millisecondsSinceEpoch;
 
       await tester.pumpWidget(QueryClientProvider(
         client: customClient,

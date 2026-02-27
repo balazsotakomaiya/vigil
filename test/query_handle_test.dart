@@ -9,6 +9,7 @@ void main() {
     late List<String> stateLog;
 
     setUp(() {
+      NotifyManager.instance.scheduleFn = (cb) => cb();
       client = QueryClient();
       stateLog = [];
     });
@@ -24,6 +25,7 @@ void main() {
       bool refetchOnMount = true,
       bool enabled = true,
       T? placeholderData,
+      RetryConfig retryConfig = const RetryConfig(maxRetries: 0),
     }) {
       return QueryHandle<T>(
         key: key,
@@ -34,6 +36,7 @@ void main() {
         refetchOnMount: refetchOnMount,
         enabled: enabled,
         placeholderData: placeholderData,
+        retryConfig: retryConfig,
       );
     }
 
@@ -44,13 +47,13 @@ void main() {
           queryFn: () async => 'hello',
         );
 
-        expect(handle.state, isA<QueryLoading<String>>());
+        expect(handle.state.isLoading, isTrue);
         expect(handle.isLoading, isTrue);
 
         // Let the microtask queue flush.
         await Future<void>.delayed(Duration.zero);
 
-        expect(handle.state, isA<QueryData<String>>());
+        expect(handle.state.isSuccess, isTrue);
         expect(handle.data, 'hello');
         expect(handle.isLoading, isFalse);
         expect(stateLog, isNotEmpty);
@@ -66,7 +69,7 @@ void main() {
 
         await Future<void>.delayed(Duration.zero);
 
-        expect(handle.state, isA<QueryError<String>>());
+        expect(handle.state.isError, isTrue);
         expect(handle.isError, isTrue);
         expect(handle.error, isA<Exception>());
 
@@ -79,7 +82,7 @@ void main() {
         // Prime the cache.
         final entry = client.getOrCreateEntry(['cached']);
         entry.data = 'cached-value';
-        entry.fetchedAt = DateTime.now();
+        entry.dataUpdatedAt = DateTime.now().millisecondsSinceEpoch;
 
         var fetchCount = 0;
         final handle = createHandle<String>(
@@ -92,9 +95,9 @@ void main() {
         );
 
         // Should have data immediately, no fetch triggered.
-        expect(handle.state, isA<QueryData<String>>());
+        expect(handle.state.isSuccess, isTrue);
         expect(handle.data, 'cached-value');
-        expect((handle.state as QueryData).isRefetching, isFalse);
+        expect(handle.state.isRefetching, isFalse);
 
         await Future<void>.delayed(Duration.zero);
         expect(fetchCount, 0);
@@ -108,8 +111,9 @@ void main() {
         // Prime cache with stale data.
         final entry = client.getOrCreateEntry(['stale']);
         entry.data = 'old';
-        entry.fetchedAt =
-            DateTime.now().subtract(const Duration(minutes: 10));
+        entry.dataUpdatedAt = DateTime.now()
+            .subtract(const Duration(minutes: 10))
+            .millisecondsSinceEpoch;
 
         final completer = Completer<String>();
         final handle = createHandle<String>(
@@ -119,7 +123,7 @@ void main() {
         );
 
         // Should show stale data with isRefetching.
-        expect(handle.state, isA<QueryData<String>>());
+        expect(handle.state.isSuccess, isTrue);
         expect(handle.data, 'old');
         expect(handle.isRefetching, isTrue);
 
@@ -136,8 +140,9 @@ void main() {
       test('shows stale data in error state on refetch failure', () async {
         final entry = client.getOrCreateEntry(['stale-err']);
         entry.data = 'old';
-        entry.fetchedAt =
-            DateTime.now().subtract(const Duration(minutes: 10));
+        entry.dataUpdatedAt = DateTime.now()
+            .subtract(const Duration(minutes: 10))
+            .millisecondsSinceEpoch;
 
         final handle = createHandle<String>(
           key: ['stale-err'],
@@ -147,9 +152,8 @@ void main() {
 
         await Future<void>.delayed(Duration.zero);
 
-        expect(handle.state, isA<QueryError<String>>());
-        final errorState = handle.state as QueryError<String>;
-        expect(errorState.staleData, 'old');
+        expect(handle.state.isError, isTrue);
+        expect(handle.state.data, 'old');
 
         handle.dispose();
       });
@@ -193,7 +197,8 @@ void main() {
           enabled: false,
         );
 
-        expect(handle.state, isA<QueryInitial<String>>());
+        expect(handle.state.isPending, isTrue);
+        expect(handle.state.isIdle, isTrue);
 
         await Future<void>.delayed(Duration.zero);
         expect(fetched, isFalse);
@@ -211,7 +216,7 @@ void main() {
           placeholderData: 'placeholder',
         );
 
-        expect(handle.state, isA<QueryData<String>>());
+        expect(handle.state.isSuccess, isTrue);
         expect(handle.data, 'placeholder');
         expect(handle.isRefetching, isTrue);
 
@@ -229,7 +234,7 @@ void main() {
       test('forces a new fetch regardless of stale time', () async {
         final entry = client.getOrCreateEntry(['refetch']);
         entry.data = 'initial';
-        entry.fetchedAt = DateTime.now();
+        entry.dataUpdatedAt = DateTime.now().millisecondsSinceEpoch;
 
         var fetchCount = 0;
         final handle = createHandle<String>(
@@ -260,7 +265,7 @@ void main() {
       test('optimistically updates data', () async {
         final entry = client.getOrCreateEntry(['optimistic']);
         entry.data = [1, 2, 3];
-        entry.fetchedAt = DateTime.now();
+        entry.dataUpdatedAt = DateTime.now().millisecondsSinceEpoch;
 
         final handle = createHandle<List<int>>(
           key: ['optimistic'],

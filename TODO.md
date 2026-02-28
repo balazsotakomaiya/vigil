@@ -30,13 +30,6 @@ Planned features and improvements, roughly prioritized.
 - Use the `dart:developer` extension APIs
 - Separate package: `packages/vigil_devtools`
 
-## Persistence adapter
-
-- Serialize/deserialize cache to local storage (Hive, SharedPreferences, Isar)
-- `QueryClient(persistor: HivePersistor())` — restores cache on cold start
-- Selective persistence via key prefix filtering
-- Consider async hydration timing (show stale persisted data while refetching)
-
 ## Structural sharing
 
 - Only update references that actually changed (deep diff)
@@ -61,13 +54,6 @@ Planned features and improvements, roughly prioritized.
   }
   ```
 - Could be a codegen step or just a documented pattern
-
-## Hydration / dehydration for testing and SSR
-
-- `client.dehydrate()` → serializable map of the entire cache
-- `client.hydrate(map)` → restore cache from a serialized map
-- Useful for pre-populating cache in tests without mocking
-- Enables server-side rendering if Flutter ever supports it
 
 ## Web-specific focus events
 

@@ -73,7 +73,7 @@ vigil/
 ├── pubspec.yaml                    # Workspace root
 ├── ARCHITECTURE.md                 # You are here
 ├── PLAN.md                         # Implementation plan (historical)
-├── STRETCH_GOALS.md                # Future ideas
+├── TODO.md                         # Planned features
 │
 └── packages/
     └── vigil/                      # Core library

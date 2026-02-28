@@ -47,6 +47,7 @@ export 'src/query_handle.dart';
 export 'src/mutation_handle.dart';
 export 'src/infinite_query_handle.dart';
 
-// Mixin & provider
+// Mixin, provider & builders
 export 'src/query_mixin.dart';
 export 'src/query_client_provider.dart';
+export 'src/query_builder.dart';

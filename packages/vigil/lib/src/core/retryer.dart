@@ -175,13 +175,14 @@ class Retryer<T> {
   }
 
   Future<void> _waitForOnline() async {
-    if (_pauseCompleter == null) return;
+    final completer = _pauseCompleter;
+    if (completer == null) return;
     _onlineUnsub = OnlineManager.instance.subscribe(() {
       if (OnlineManager.instance.isOnline) {
         _resumeIfPaused();
       }
     });
-    await _pauseCompleter!.future;
+    await completer.future;
   }
 
   Future<void> _delayWithCancellation(Duration delay) async {

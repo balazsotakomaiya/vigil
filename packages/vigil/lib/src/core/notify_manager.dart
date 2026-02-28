@@ -44,7 +44,11 @@ class NotifyManager {
     if (queued.isEmpty) return;
     scheduleFn(() {
       for (final cb in queued) {
-        cb();
+        try {
+          cb();
+        } catch (_) {
+          // Don't let one failing listener prevent others from being notified.
+        }
       }
     });
   }

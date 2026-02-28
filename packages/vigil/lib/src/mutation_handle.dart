@@ -106,13 +106,10 @@ class MutationHandle<TData, TInput> {
     }
     _optimisticUpdate?.call(input);
 
+    final entry = _cacheEntry;
     try {
       final data = await _mutationFn(input);
-      if (_disposed) {
-        _cacheEntry?.markDone();
-        _cacheEntry = null;
-        return;
-      }
+      if (_disposed) return;
 
       _updateState(MutationSuccess<TData>(data));
 
@@ -123,13 +120,13 @@ class MutationHandle<TData, TInput> {
         }
       }
 
-      _onSuccess?.call(data);
-    } catch (e) {
-      if (_disposed) {
-        _cacheEntry?.markDone();
-        _cacheEntry = null;
-        return;
+      try {
+        _onSuccess?.call(data);
+      } catch (_) {
+        // Don't let a callback exception break the mutation lifecycle.
       }
+    } catch (e) {
+      if (_disposed) return;
 
       _updateState(MutationError<TData>(e));
 
@@ -139,9 +136,13 @@ class MutationHandle<TData, TInput> {
         }
       }
 
-      _onError?.call(e, rollback);
+      try {
+        _onError?.call(e, rollback);
+      } catch (_) {
+        // Don't let a callback exception break the mutation lifecycle.
+      }
     } finally {
-      _cacheEntry?.markDone();
+      entry?.markDone();
       _cacheEntry = null;
     }
   }

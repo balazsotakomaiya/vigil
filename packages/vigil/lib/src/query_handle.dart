@@ -100,7 +100,7 @@ class QueryHandle<T> {
   /// app returns to the foreground.
   void refetchIfStale() {
     if (_disposed) return;
-    if (_isStale) refetch();
+    if (_isStale || _entry.isInvalidated) refetch();
   }
 
   /// Optimistically update the cached data.

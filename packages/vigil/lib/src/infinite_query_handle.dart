@@ -162,8 +162,11 @@ class InfiniteQueryHandle<T, P> {
     }
 
     _isFetchingDirection = _Direction.forward;
-    await _fetchPage(param, _Direction.forward);
-    _isFetchingDirection = null;
+    try {
+      await _fetchPage(param, _Direction.forward);
+    } finally {
+      _isFetchingDirection = null;
+    }
   }
 
   /// Fetch the previous page. No-op if [hasPreviousPage] is false or a fetch
@@ -180,8 +183,11 @@ class InfiniteQueryHandle<T, P> {
     if (prevParam == null) return;
 
     _isFetchingDirection = _Direction.backward;
-    await _fetchPage(prevParam, _Direction.backward);
-    _isFetchingDirection = null;
+    try {
+      await _fetchPage(prevParam, _Direction.backward);
+    } finally {
+      _isFetchingDirection = null;
+    }
   }
 
   /// Refetch all existing pages sequentially, preserving their order.
@@ -288,7 +294,7 @@ class InfiniteQueryHandle<T, P> {
     } catch (e, st) {
       if (!_disposed) {
         _dispatch(QueryState<InfiniteQueryData<T, P>>(
-          status: _state.data != null ? QueryStatus.error : QueryStatus.error,
+          status: QueryStatus.error,
           fetchStatus: FetchStatus.idle,
           data: _state.data,
           error: e,

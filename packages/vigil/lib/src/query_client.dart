@@ -228,6 +228,17 @@ class QueryClient {
   static Duration _maxDuration(Duration a, Duration b) =>
       a > b ? a : b;
 
+  /// Best-effort copy of cached data for snapshot/rollback.
+  ///
+  /// Copies Lists and Maps (the most common cache data shapes) so that
+  /// mutations applied optimistically don't corrupt the snapshot. Falls
+  /// back to returning the original reference for other types.
+  static dynamic _shallowCopy(dynamic value) {
+    if (value is List) return List<dynamic>.of(value);
+    if (value is Map) return Map<dynamic, dynamic>.of(value);
+    return value;
+  }
+
   // ---------------------------------------------------------------------------
   // Introspection (useful for tests & dev tools)
   // ---------------------------------------------------------------------------
@@ -253,7 +264,7 @@ class QueryClient {
 
       for (final entry in _cache.entries) {
         if (_keyMatchesPrefix(entry.key, prefixWithoutClose, prefix)) {
-          snapshots[entry.key] = entry.value.data;
+          snapshots[entry.key] = _shallowCopy(entry.value.data);
         }
       }
     }

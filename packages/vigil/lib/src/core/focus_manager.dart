@@ -70,6 +70,12 @@ class FocusManager extends Subscribable<void Function()> {
     _teardown = null;
   }
 
+  /// Reset to default state. Intended for test teardown.
+  void reset() {
+    _removePlatformListener();
+    _focused = true;
+  }
+
   void _notifyListeners() {
     for (final listener in listeners) {
       listener();
